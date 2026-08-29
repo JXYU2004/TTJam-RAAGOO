@@ -1,6 +1,21 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
+export type TraceEventType = "queued" | "started" | "completed" | "failed" | "cancelled";
+
+export interface TraceEvent {
+  type: TraceEventType;
+  timestamp: string;
+  message?: string;
+}
+
+export interface Trace {
+  id: string;
+  runId: string;
+  agentId: string;
+  events: TraceEvent[];
+  createdAt: string;
+}
 
 export interface Agent {
   id: string;
@@ -48,6 +63,7 @@ export interface Database {
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
+  traces: Trace[];
 }
 
 export interface CreateAgentInput {

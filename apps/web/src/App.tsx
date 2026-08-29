@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type { Agent, AgentRun, Message, SystemInfo, Trace } from "./types";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -42,9 +42,11 @@ export default function App() {
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showTrace, setShowTrace] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
+  const [activeTrace, setActiveTrace] = useState<Trace | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -98,7 +100,9 @@ export default function App() {
 
   useEffect(() => {
     setActiveRun(null);
+    setActiveTrace(null);
     setShowSettings(false);
+    setShowTrace(false);
     if (!selectedId) {
       setMessages([]);
       return;
@@ -132,6 +136,23 @@ export default function App() {
   useEffect(() => {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, activeRun]);
+
+  useEffect(() => {
+    if (activeRun) {
+      void api
+        .trace(activeRun.id)
+        .then((result) => {
+          if (mountedRef.current && selectedIdRef.current) {
+            setActiveTrace(result.trace);
+          }
+        })
+        .catch((reason) =>
+          setError(reason instanceof Error ? reason.message : String(reason)),
+        );
+    } else {
+      setActiveTrace(null);
+    }
+  }, [activeRun?.id]);
 
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -208,9 +229,12 @@ export default function App() {
       while (mountedRef.current) {
         await new Promise((resolve) => window.setTimeout(resolve, 900));
         if (!mountedRef.current) return;
-        const result = await api.run(runId);
-        if (selectedIdRef.current === agentId) setActiveRun(result.run);
-        if (!["queued", "running"].includes(result.run.status)) {
+        const [runResult, traceResult] = await Promise.all([api.run(runId), api.trace(runId)]);
+        if (selectedIdRef.current === agentId) {
+          setActiveRun(runResult.run);
+          setActiveTrace(traceResult.trace);
+        }
+        if (!["queued", "running"].includes(runResult.run.status)) {
           await Promise.all([refreshMessages(agentId), refreshAgents()]);
           return;
         }
@@ -487,7 +511,35 @@ export default function App() {
                   <span className="pulse" />
                   {selected.codexThreadId ? "Session connected" : "New session"}
                 </div>
+                {activeTrace && (
+                  <button
+                    className="button button-ghost"
+                    onClick={() => setShowTrace((value) => !value)}
+                  >
+                    {showTrace ? "Hide" : "Show"} trace
+                  </button>
+                )}
               </div>
+
+              {showTrace && activeTrace && (
+                <div className="trace-panel">
+                  <div className="trace-header">
+                    <span className="eyebrow">Run trace</span>
+                    <h3>Lifecycle events</h3>
+                  </div>
+                  <div className="trace-events">
+                    {activeTrace.events.map((event, index) => (
+                      <div key={index} className={"trace-event trace-event-" + event.type}>
+                        <span className="trace-event-type">{event.type}</span>
+                        <span className="trace-event-time">{formatTime(event.timestamp)}</span>
+                        {event.message && (
+                          <span className="trace-event-message">{event.message}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div className="messages">
                 {messages.length === 0 && !activeRun ? (

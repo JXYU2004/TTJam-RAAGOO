@@ -128,6 +128,11 @@ export async function createApp(
     return { run: service.getRun(id) };
   });
 
+  app.get("/api/runs/:id/trace", async (request) => {
+    const { id } = runIdParams.parse(request.params);
+    return { trace: service.getTrace(id) };
+  });
+
   if (config.nodeEnv === "production") {
     const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
     await app.register(fastifyStatic, {
