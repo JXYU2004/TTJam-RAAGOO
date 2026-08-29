@@ -131,3 +131,102 @@ describe("Agent lifecycle", () => {
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
   });
 });
+
+describe("Glass Box Tracing", () => {
+  it("creates a trace with lifecycle events when a run is executed", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Tracer" });
+    const { run } = await service.sendMessage(agent.id, "build something");
+    
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    
+    const trace = service.getTrace(run.id);
+    expect(trace.runId).toBe(run.id);
+    expect(trace.agentId).toBe(agent.id);
+    expect(trace.events.map((e) => e.type)).toEqual(["queued", "started", "completed"]);
+    expect(trace.events[0]).toMatchObject({ type: "queued" });
+    expect(trace.events[1]).toMatchObject({ type: "started" });
+    expect(trace.events[2]).toMatchObject({ type: "completed" });
+    // Verify timestamps are present and ordered
+    const timestamps = trace.events.map((e) => new Date(e.timestamp).getTime());
+    expect(timestamps[0] <= timestamps[1]).toBe(true);
+    expect(timestamps[1] <= timestamps[2]).toBe(true);
+  });
+
+  it("includes error message in failed trace event", async () => {
+    let finish!: (error: Error) => void;
+    const pending = new Promise<RunnerResult>((_, reject) => {
+      finish = reject;
+    });
+    const runner: AgentRunner = {
+      run: () => pending,
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "FailTracer" });
+    const { run } = await service.sendMessage(agent.id, "fail please");
+    
+    // Reject with error in a way that doesn't cause unhandled rejection
+    setTimeout(() => finish(new Error("Execution timeout")), 10);
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+    
+    const trace = service.getTrace(run.id);
+    expect(trace.events.map((e) => e.type)).toEqual(["queued", "started", "failed"]);
+    expect(trace.events[2]).toMatchObject({
+      type: "failed",
+      message: "Execution timeout",
+    });
+  });
+
+  it("marks trace event as cancelled when run is cancelled", async () => {
+    let finish!: (result: RunnerResult) => void;
+    const pending = new Promise<RunnerResult>((resolve) => {
+      finish = resolve;
+    });
+    const runner: AgentRunner = {
+      run: () => pending,
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "CancelTracer" });
+    const { run } = await service.sendMessage(agent.id, "cancel me");
+    
+    // Request cancellation
+    const stopPromise = service.stopAgent(agent.id);
+    await new Promise((resolve) => setTimeout(resolve, 50)); // Give stop time to process
+    
+    // Complete the run (will be marked as cancelled due to stopAgent)
+    finish({ output: "", threadId: null, usage: null });
+    
+    await stopPromise;
+    await expect.poll(() => service.getRun(run.id).status).toBe("cancelled");
+    
+    const trace = service.getTrace(run.id);
+    expect(trace.events.map((e) => e.type)).toContain("cancelled");
+  });
+
+  it("deletes traces when an agent is deleted", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "DeleteTracer" });
+    const { run } = await service.sendMessage(agent.id, "build");
+    
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    
+    // Verify trace exists
+    expect(service.getTrace(run.id)).toBeDefined();
+    
+    // Delete the agent
+    await service.deleteAgent(agent.id);
+    
+    // Verify trace is gone
+    expect(() => service.getTrace(run.id)).toThrow("Trace not found");
+  });
+
+  it("returns 404 when trace does not exist", async () => {
+    const service = await makeService();
+    expect(() => service.getTrace("nonexistent-run-id")).toThrow("Trace not found");
+  });
+});
+

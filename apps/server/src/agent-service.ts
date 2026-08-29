@@ -9,6 +9,7 @@ import type {
   AgentRunner,
   CreateAgentInput,
   Message,
+  Trace,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -25,6 +26,40 @@ export class AgentService {
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
   ) {}
+
+  private createTrace(runId: string, agentId: string): Trace {
+    return {
+      id: randomUUID(),
+      runId,
+      agentId,
+      events: [],
+      createdAt: now(),
+    };
+  }
+
+  private async emitTraceEvent(
+    traceId: string,
+    type: "queued" | "started" | "completed" | "failed" | "cancelled",
+    message?: string,
+  ): Promise<void> {
+    await this.store.mutate((database) => {
+      const trace = database.traces.find((t) => t.id === traceId);
+      if (trace) {
+        const event: {
+          type: "queued" | "started" | "completed" | "failed" | "cancelled";
+          timestamp: string;
+          message?: string;
+        } = {
+          type,
+          timestamp: now(),
+        };
+        if (message !== undefined) {
+          event.message = message;
+        }
+        trace.events.push(event);
+      }
+    });
+  }
 
   async initialize(): Promise<void> {
     await this.store.initialize();
@@ -112,6 +147,7 @@ export class AgentService {
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
       database.runs = database.runs.filter((item) => item.agentId !== id);
+      database.traces = database.traces.filter((item) => item.agentId !== id);
     });
     return { archivedWorkspace };
   }
@@ -140,6 +176,14 @@ export class AgentService {
       throw new HttpError(404, "Run not found");
     }
     return run;
+  }
+
+  getTrace(runId: string): Trace {
+    const trace = this.store.snapshot().traces.find((item) => item.runId === runId);
+    if (!trace) {
+      throw new HttpError(404, "Trace not found");
+    }
+    return trace;
   }
 
   getRuns(agentId: string): AgentRun[] {
@@ -182,6 +226,7 @@ export class AgentService {
       content: prompt,
       createdAt: timestamp,
     };
+    const trace = this.createTrace(runId, agentId);
     const agentAtStart = await this.store.mutate((database) => {
       const storedAgent = database.agents.find((item) => item.id === agentId);
       if (!storedAgent) {
@@ -195,13 +240,18 @@ export class AgentService {
       }
       database.runs.push(run);
       database.messages.push(message);
+      database.traces.push(trace);
+      trace.events.push({
+        type: "queued",
+        timestamp,
+      });
       const snapshot = structuredClone(storedAgent);
       storedAgent.status = "busy";
       storedAgent.lastError = null;
       storedAgent.updatedAt = timestamp;
       return snapshot;
     });
-    const execution = this.executeRun(agentAtStart, run);
+    const execution = this.executeRun(agentAtStart, run, trace.id);
     this.activeExecutions.set(agentId, execution);
     void execution
       .finally(() => {
@@ -232,12 +282,20 @@ export class AgentService {
     };
   }
 
-  private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
+  private async executeRun(agentAtStart: Agent, run: AgentRun, traceId: string): Promise<void> {
+    const timestamp = now();
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === run.id);
       if (storedRun) {
         storedRun.status = "running";
-        storedRun.startedAt = now();
+        storedRun.startedAt = timestamp;
+      }
+      const trace = database.traces.find((t) => t.id === traceId);
+      if (trace) {
+        trace.events.push({
+          type: "started",
+          timestamp,
+        });
       }
     });
     try {
@@ -254,6 +312,7 @@ export class AgentService {
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
+        const trace = database.traces.find((t) => t.id === traceId);
         if (!storedRun || !agent) return;
         storedRun.status = "completed";
         storedRun.output = result.output;
@@ -267,6 +326,12 @@ export class AgentService {
           content: result.output,
           createdAt: completedAt,
         });
+        if (trace) {
+          trace.events.push({
+            type: "completed",
+            timestamp: completedAt,
+          });
+        }
         agent.status = "ready";
         agent.codexThreadId = result.threadId;
         agent.lastError = null;
@@ -279,10 +344,25 @@ export class AgentService {
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
+        const trace = database.traces.find((t) => t.id === traceId);
         if (storedRun) {
           storedRun.status = cancelled ? "cancelled" : "failed";
           storedRun.error = message;
           storedRun.completedAt = completedAt;
+        }
+        if (trace) {
+          const traceEvent: {
+            type: "queued" | "started" | "completed" | "failed" | "cancelled";
+            timestamp: string;
+            message?: string;
+          } = {
+            type: cancelled ? "cancelled" : "failed",
+            timestamp: completedAt,
+          };
+          if (message) {
+            traceEvent.message = message;
+          }
+          trace.events.push(traceEvent);
         }
         if (agent) {
           if (agent.status !== "stopped") {
