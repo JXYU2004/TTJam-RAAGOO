@@ -229,9 +229,12 @@ export default function App() {
       while (mountedRef.current) {
         await new Promise((resolve) => window.setTimeout(resolve, 900));
         if (!mountedRef.current) return;
-        const result = await api.run(runId);
-        if (selectedIdRef.current === agentId) setActiveRun(result.run);
-        if (!["queued", "running"].includes(result.run.status)) {
+        const [runResult, traceResult] = await Promise.all([api.run(runId), api.trace(runId)]);
+        if (selectedIdRef.current === agentId) {
+          setActiveRun(runResult.run);
+          setActiveTrace(traceResult.trace);
+        }
+        if (!["queued", "running"].includes(runResult.run.status)) {
           await Promise.all([refreshMessages(agentId), refreshAgents()]);
           return;
         }

@@ -45,4 +45,24 @@ describe("HTTP boundary", () => {
     expect(oversized.statusCode).toBe(413);
     await app.close();
   });
+
+  it("returns a run trace from the control-plane API", async () => {
+    const trace = {
+      id: "trace-1",
+      runId: "run-1",
+      agentId: "agent-1",
+      createdAt: "2026-08-29T00:00:00.000Z",
+      events: [{ type: "completed", timestamp: "2026-08-29T00:00:01.000Z" }],
+    };
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), {
+      ...service,
+      getTrace: (runId: string) => ({ ...trace, runId }),
+    } as AgentService);
+
+    const response = await app.inject({ method: "GET", url: "/api/runs/run-1/trace" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ trace });
+    await app.close();
+  });
 });

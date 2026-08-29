@@ -38,6 +38,13 @@ afterEach(async () => {
 async function makeService(runner: AgentRunner = new FakeRunner()): Promise<AgentService> {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
   temporaryDirectories.push(root);
+  return makeServiceIn(root, runner);
+}
+
+async function makeServiceIn(
+  root: string,
+  runner: AgentRunner = new FakeRunner(),
+): Promise<AgentService> {
   const config = loadConfig({
     NODE_ENV: "test",
     APP_DATA_DIR: path.join(root, "data"),
@@ -137,9 +144,9 @@ describe("Glass Box Tracing", () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "Tracer" });
     const { run } = await service.sendMessage(agent.id, "build something");
-    
+
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
-    
+
     const trace = service.getTrace(run.id);
     expect(trace.runId).toBe(run.id);
     expect(trace.agentId).toBe(agent.id);
@@ -166,11 +173,11 @@ describe("Glass Box Tracing", () => {
     const service = await makeService(runner);
     const agent = await service.createAgent({ name: "FailTracer" });
     const { run } = await service.sendMessage(agent.id, "fail please");
-    
+
     // Reject with error in a way that doesn't cause unhandled rejection
     setTimeout(() => finish(new Error("Execution timeout")), 10);
     await expect.poll(() => service.getRun(run.id).status).toBe("failed");
-    
+
     const trace = service.getTrace(run.id);
     expect(trace.events.map((e) => e.type)).toEqual(["queued", "started", "failed"]);
     expect(trace.events[2]).toMatchObject({
@@ -192,17 +199,17 @@ describe("Glass Box Tracing", () => {
     const service = await makeService(runner);
     const agent = await service.createAgent({ name: "CancelTracer" });
     const { run } = await service.sendMessage(agent.id, "cancel me");
-    
+
     // Request cancellation
     const stopPromise = service.stopAgent(agent.id);
     await new Promise((resolve) => setTimeout(resolve, 50)); // Give stop time to process
-    
+
     // Complete the run (will be marked as cancelled due to stopAgent)
     finish({ output: "", threadId: null, usage: null });
-    
+
     await stopPromise;
     await expect.poll(() => service.getRun(run.id).status).toBe("cancelled");
-    
+
     const trace = service.getTrace(run.id);
     expect(trace.events.map((e) => e.type)).toContain("cancelled");
   });
@@ -211,15 +218,15 @@ describe("Glass Box Tracing", () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "DeleteTracer" });
     const { run } = await service.sendMessage(agent.id, "build");
-    
+
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
-    
+
     // Verify trace exists
     expect(service.getTrace(run.id)).toBeDefined();
-    
+
     // Delete the agent
     await service.deleteAgent(agent.id);
-    
+
     // Verify trace is gone
     expect(() => service.getTrace(run.id)).toThrow("Trace not found");
   });
@@ -228,5 +235,26 @@ describe("Glass Box Tracing", () => {
     const service = await makeService();
     expect(() => service.getTrace("nonexistent-run-id")).toThrow("Trace not found");
   });
-});
 
+  it("records cancellation in the trace when an active run is recovered after restart", async () => {
+    const pending = new Promise<RunnerResult>(() => undefined);
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
+    temporaryDirectories.push(root);
+    const service = await makeServiceIn(root, {
+      run: () => pending,
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "RestartTracer" });
+    const { run } = await service.sendMessage(agent.id, "wait for restart");
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("running");
+
+    const restarted = await makeServiceIn(root);
+    expect(restarted.getRun(run.id)).toMatchObject({ status: "cancelled" });
+    expect(restarted.getTrace(run.id).events.at(-1)).toMatchObject({
+      type: "cancelled",
+      message: "Server restarted while this run was active",
+    });
+  });
+});

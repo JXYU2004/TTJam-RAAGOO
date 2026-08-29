@@ -37,39 +37,25 @@ export class AgentService {
     };
   }
 
-  private async emitTraceEvent(
-    traceId: string,
-    type: "queued" | "started" | "completed" | "failed" | "cancelled",
-    message?: string,
-  ): Promise<void> {
-    await this.store.mutate((database) => {
-      const trace = database.traces.find((t) => t.id === traceId);
-      if (trace) {
-        const event: {
-          type: "queued" | "started" | "completed" | "failed" | "cancelled";
-          timestamp: string;
-          message?: string;
-        } = {
-          type,
-          timestamp: now(),
-        };
-        if (message !== undefined) {
-          event.message = message;
-        }
-        trace.events.push(event);
-      }
-    });
-  }
-
   async initialize(): Promise<void> {
     await this.store.initialize();
     await this.workspaces.initialize();
     await this.store.mutate((database) => {
       for (const run of database.runs) {
         if (run.status === "queued" || run.status === "running") {
+          const completedAt = now();
+          const message = "Server restarted while this run was active";
           run.status = "cancelled";
-          run.error = "Server restarted while this run was active";
-          run.completedAt = now();
+          run.error = message;
+          run.completedAt = completedAt;
+          const trace = database.traces.find((item) => item.runId === run.id);
+          if (trace) {
+            trace.events.push({
+              type: "cancelled",
+              timestamp: completedAt,
+              message,
+            });
+          }
         }
       }
       for (const agent of database.agents) {

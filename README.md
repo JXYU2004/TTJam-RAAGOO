@@ -9,7 +9,7 @@ Volcengine ECS.
 
 > [!WARNING]
 > This is a single-user proof of concept. It intentionally has no identity,
-> tracing, audit, or hardened sandbox middleware. Do not use production data or
+> audit, or hardened sandbox middleware. Do not use production data or
 > credentials. See [SECURITY.md](SECURITY.md).
 
 ## Screenshots
@@ -27,6 +27,7 @@ Volcengine ECS.
 - React and TypeScript Web UI
 - Agent create, edit, start, stop, delete, and multi-turn chat
 - Fastify control plane with asynchronous Run state
+- Persisted Run traces with lifecycle events in the browser Playground
 - Persistent Agent workspaces and Codex sessions
 - Disposable Docker, Colima, or Podman container for each local turn
 - Docker and Terraform deployment paths for Volcengine ECS
@@ -165,6 +166,13 @@ npm run dev
 
 - Web UI: <http://localhost:5173>
 - API: <http://localhost:3000>
+
+## Control-plane API
+
+`GET /api/runs/:id/trace` returns the persisted trace for an Agent Run. The
+response contains the stable trace, Run, and Agent IDs, plus lifecycle events
+with timestamps. When `APP_AUTH_TOKEN` is configured, include it as a Bearer
+token as for every other `/api` endpoint.
 
 Use local paths in `.env` when running outside Docker:
 
