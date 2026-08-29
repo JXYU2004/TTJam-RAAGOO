@@ -294,6 +294,9 @@ export class AgentService {
         prompt: run.prompt,
         threadId: agentAtStart.codexThreadId,
       });
+      if (this.cancellationRequests.has(agentAtStart.id)) {
+        throw new RunCancelledError();
+      }
       const completedAt = now();
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
